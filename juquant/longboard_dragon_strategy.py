@@ -36,6 +36,8 @@ def initialize(context):
     """
     策略初始化函数
     """
+    set_benchmark('000300.XSHG')
+
     # -------- 系统设置 --------
     set_option('use_real_price', True)
     set_option('avoid_future_data', True)
