@@ -284,12 +284,13 @@ class RemoteBrokerClient:
         self._data_client = data_client
 
     # ----- 聚宽风格入口 -----
-    def order(self, security: str, amount: int, price: Optional[float] = None, side: Optional[str] = None, wait_timeout: float = 0) -> RemoteOrder:
+    def order(self, security: str, amount: int,style=None, price: Optional[float] = None, side: Optional[str] = None, wait_timeout: float = 0) -> RemoteOrder:
         """
         按数量下单。
         
         :param security: 证券代码
         :param amount: 数量（正数买入，负数卖出；如果指定了 side 则取绝对值）
+        :param style: 委托方式
         :param price: 委托价格，None 时服务端自动使用市价单
         :param side: 方向 BUY/SELL，None 时根据 amount 正负判断
         :param wait_timeout: 等待超时秒数，0 表示异步返回
@@ -299,18 +300,21 @@ class RemoteBrokerClient:
         """
         if amount == 0:
             return ""
+        if style is not None and hasattr(style,'limit_price') and price is None:
+            price = getattr(style,'limit_price',None)
         actual_side = side or ("BUY" if amount > 0 else "SELL")
         qty = abs(int(amount))
         # 服务端会自动处理最小手数/步进取整
         order = self._place_order(security, qty, price, actual_side, wait_timeout=wait_timeout)
         return order
 
-    def order_value(self, security: str, value: float, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
+    def order_value(self, security: str, value: float, style = None, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
         """
         按市值下单。
         
         :param security: 证券代码
         :param value: 目标市值（正数买入，负数卖出）
+        :param style: 委托方式
         :param price: 委托价格，None 时服务端自动使用市价单
         :param wait_timeout: 等待超时秒数，0 表示异步返回
         :return: 订单 ID
@@ -329,12 +333,13 @@ class RemoteBrokerClient:
         order = self._place_order(security, qty, price, side, wait_timeout=wait_timeout)
         return order
 
-    def order_target(self, security: str, target: int, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
+    def order_target(self, security: str, target: int, style = None, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
         """
         调仓到目标数量。
         
         :param security: 证券代码
         :param target: 目标持仓数量
+        :param style: 委托方式
         :param price: 委托价格，None 时服务端自动使用市价单
         :param wait_timeout: 等待超时秒数，0 表示异步返回
         :return: 订单 ID（如果不需要交易则返回空字符串）
@@ -345,14 +350,15 @@ class RemoteBrokerClient:
         delta = target - current
         if delta == 0:
             return ""
-        return self.order(security, delta, price=price, wait_timeout=wait_timeout)
+        return self.order(security, delta, style=style, price=price, wait_timeout=wait_timeout)
 
-    def order_target_value(self, security: str, target_value: float, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
+    def order_target_value(self, security: str, target_value: float, style = None, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
         """
         调仓到目标市值。
         
         :param security: 证券代码
         :param target_value: 目标持仓市值
+        :param style: 委托方式
         :param price: 委托价格，None 时服务端自动使用市价单
         :param wait_timeout: 等待超时秒数，0 表示异步返回
         :return: 订单 ID（如果不需要交易则返回空字符串）
@@ -364,7 +370,7 @@ class RemoteBrokerClient:
             raise RuntimeError("无法获取价格，无法按目标市值下单")
         # 计算目标数量，服务端会自动按最小手数/步进取整
         target_amount = int(target_value / p)
-        return self.order_target(security, target_amount, price=price, wait_timeout=wait_timeout)
+        return self.order_target(security, target_amount, style=style, price=price, wait_timeout=wait_timeout)
 
     # ----- 基础接口 -----
     def get_account(self) -> RemoteAccount:
@@ -939,61 +945,61 @@ def _df_from_payload(payload: Dict[str, Any]) -> pd.DataFrame:
 
 
 # --------- 便捷函数（JQ 兼容） ----------
-def order(security: str, amount: int, price: Optional[float] = None, side: Optional[str] = None, wait_timeout: float = 0) -> RemoteOrder:
+def order(security: str, amount: int, style=None, price: Optional[float] = None, side: Optional[str] = None, wait_timeout: float = 0) -> RemoteOrder:
     order = _ORDERS_FUNC.get('order')
     is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order:
         _log("INFO", f"代理聚宽下单{security},数量{amount}")
-        order_result = order(security, amount)
+        order_result = order(security, amount,style=style)
     if is_live:
         try:
-            order_result = get_broker_client().order(security, amount, price=price, side=side, wait_timeout=wait_timeout)
+            order_result = get_broker_client().order(security, amount, style=style, price=price, side=side, wait_timeout=wait_timeout)
         except Exception as e:
             _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
-def order_value(security: str, value: float, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
+def order_value(security: str, value: float,style=None, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
     order_value = _ORDERS_FUNC.get('order_value')
     is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order_value:
         _log("INFO", f"代理聚宽下单{security},市值{value}")
-        order_result = order_value(security, value)
+        order_result = order_value(security, value,style=style)
 
     if is_live:
         try:
-            order_result = get_broker_client().order_value(security, value, price=price, wait_timeout=wait_timeout)
+            order_result = get_broker_client().order_value(security, value,style=style, price=price, wait_timeout=wait_timeout)
         except Exception as e:
             _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
-def order_target(security: str, target: int, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
+def order_target(security: str, target: int, style=None, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
     order_target = _ORDERS_FUNC.get('order_target')
     is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order_target:
         _log("INFO", f"代理聚宽下单{security},目标数量{target}")
-        order_result = order_target(security, target)
+        order_result = order_target(security, target,style=style)
     if is_live:
         try:
-            order_result = get_broker_client().order_target(security, target, price=price, wait_timeout=wait_timeout)
+            order_result = get_broker_client().order_target(security, target, style=style, price=price, wait_timeout=wait_timeout)
         except Exception as e:
             _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
-def order_target_value(security: str, target_value: float, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
+def order_target_value(security: str, target_value: float, style=None, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
     order_target_value = _ORDERS_FUNC.get('order_target_value')
     is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order_target_value:
-        order_result = order_target_value(security, target_value)
+        order_result = order_target_value(security, target_value,style=style)
     if is_live:
         try:
-            order_result = get_broker_client().order_target_value(security, target_value, price=price, wait_timeout=wait_timeout)
+            order_result = get_broker_client().order_target_value(security, target_value, style=style, price=price, wait_timeout=wait_timeout)
         except Exception as e:
             _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result

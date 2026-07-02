@@ -29,7 +29,7 @@ def initialize(context):
     g.max_cash_per_stock = 20*10000                # 单个标的最大金额
     g.max_cash_ratio_per_stock = 0.5                # 单个标的占总仓比例
     g.ma_short, g.ma_mid, g.ma_long = 5, 20, 60
-    g.convergence_threshold = 0.03     # 粘合阈值3%
+    g.convergence_threshold = 0.02     # 粘合阈值2%
     g.consecutive_days = 2             # 连续N天均线粘合
     
     # 大盘风控参数
@@ -47,9 +47,6 @@ def initialize(context):
     
     # ---------- 定时任务 ----------
     run_daily(etf_pool_and_filters, time='09:01')   # 开盘前更新池
-    run_daily(trade_sell, time='10:30')     # 卖出交易判断
-    run_daily(trade_buy, time='11:00')     # 卖出交易判断
-
     run_daily(trade_sell, time='14:30')     # 卖出交易判断
     run_daily(trade_buy, time='14:45')     # 买入交易判断
 
@@ -273,8 +270,8 @@ def etf_pool_and_filters(context):
 
     intersection = converged_set.intersection(positive_set)
     g.etf_pool = intersection
-    log.info('连续{}天均线粘合ETF：{}只,{}，MACD>0：{}只,{}，交集{}只，{}'.format(
-        g.consecutive_days, len(converged_set),converged_set, len(positive_set),positive_set,len(intersection),intersection))
+    log.info('连续{}天均线粘合ETF：{}只，MACD>0：{}只，交集{}只，{}'.format(
+        g.consecutive_days, len(converged_set), len(positive_set),len(intersection),intersection))
         
 
 
@@ -315,7 +312,7 @@ def calc_macd(close_prices, fast=12, slow=26, signal=9):
 
 def is_macd_positive(security, context):
     """判断最新月线MACD柱是否大于0"""
-    bars = get_bars(security, count=50, unit='1w', fields=['close'],
+    bars = get_bars(security, count=50, unit='1M', fields=['close'],
                     include_now=False, fq_ref_date=context.current_dt.date(), df=True)
     if bars is None or len(bars) < 35:
         return False

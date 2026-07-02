@@ -1,23 +1,42 @@
 # -*- coding: utf-8 -*-
-# 四大宽基轮动 · 最终优化版
+# 主流大宽基轮动 · 最终优化版
 # 包含：原版轮动 + 优化5（市场强度过滤）+ 优化6（单只止损）
 #      + 改进1（波动率目标仓位调整）
 #      + 改进2（相对强度排序 + 排名缓冲）
 #      + 改进5（相对动量 rel_mom）
 from jqdata import *
 import numpy as np
+import AI初筛高景气行业标的 as industry
 
-def initialize(context):
-    g.assets = [
-        '510300.XSHG',   # 沪深300
-        '513500.XSHG',   # 标普500
-        '159915.XSHE',   # 创业板
-        '513100.XSHG',    # 纳指100
-        '518880.XSHG',
-        # '162411.XSHE',
-    ]
+
+# =======================实盘配置Start=======================================
+import bullet_trade_jq_wrapper as bt_wrapper
+import datetime
+
+# 默认下单函数
+TRADE_TYPE = 'no_live'  # 'live':实盘模式,其他值：用聚宽平台默认下单函数
+(order,order_target_value,order_value,order_target)  = bt_wrapper.wrap_orders(order, order_target_value, order_value, order_target,TRADE_TYPE,log_func=log.info)
+# 初始化函数，聚宽重启/代码刷新时调用
+def process_initialize(context):
+    """
+    聚宽重启/代码刷新时调用，此处完成所有初始化与任务注册。
+    """
+    log.info(f"process_initialize 重建配置 {datetime.datetime.now()}")
+    # 初始化链接，同时覆盖默认下单函数
+    bt_wrapper.configured()
+
+# =======================实盘配置End=======================================
+
+def common_init(context):
+    set_benchmark('000300.XSHG')
+    set_option('use_real_price', True)
+    set_option('avoid_future_data', True)
+    set_order_cost(OrderCost(open_tax=0, close_tax=0,
+                             open_commission=1/10000, close_commission=1/10000, min_commission=5), type='stock')
+    set_slippage(PriceRelatedSlippage(0.001))
+
+def set_params(context):
     g.cash_etf = '511880.XSHG'
-    
     # 基础参数
     g.ma_trend = 60
     g.mom_day = 20
@@ -26,24 +45,19 @@ def initialize(context):
     # 仓位动态调整参数（原版）
     g.base_position = 1.0
     g.max_position = 1.0
-    g.min_position = 0.1
+    g.min_position = 0
     g.momentum_threshold_high = 0.03
-    g.momentum_threshold_low = -0.015
+    g.momentum_threshold_low = -0.02
     
     # ========== 优化5参数（市场强度过滤） ==========
     g.ma_slope_threshold = -0.01
     g.enable_cross_market_filter = True
-    g.asset_market_map = {
-        '510300.XSHG': 'CN',
-        '159915.XSHE': 'CN',
-        '513500.XSHG': 'US',
-        '513100.XSHG': 'US'
-    }
+    
     g.weak_market_min_position = 0.05
     
     # ========== 优化6参数（单只ETF止损） ==========
-    g.stop_loss_drawdown = 0.05
-    g.stop_loss_half_ratio = 0.5
+    g.stop_loss_drawdown = 0.045
+    g.stop_loss_half_ratio = 1
     g.holding_high_price = {}
     
     # ========== 改进1参数（波动率目标调整） ==========
@@ -55,47 +69,25 @@ def initialize(context):
     g.rebalance_threshold = 0.05      # 得分变化超过5%才强制调仓（预留，当前只做持仓比较）
     g.skip_rebalance = False           # 是否跳过本次调仓
     
-    # ========== 改进5参数（相对动量） ==========
-    # 使用 rel_mom 替代绝对动量，权重更高
-    
-    set_benchmark('000300.XSHG')
-    set_option('use_real_price', True)
-    set_option('avoid_future_data', True)
-    set_order_cost(OrderCost(open_tax=0, close_tax=0,
-                             open_commission=1/10000, close_commission=1/10000, min_commission=5), type='stock')
-    set_slippage(PriceRelatedSlippage(0.001))
-    
+def schedule_tasks(context):
     # 主调仓：每周一执行
-    run_weekly(calc_signals_and_clear, weekday=1, time='09:31')
-    run_weekly(buy_signals, weekday=1, time='09:32')
+    run_weekly(calc_signals_and_clear, weekday=1, time='09:30')
+    run_weekly(buy_signals, weekday=1, time='09:31')
     
     # 每日止损检查（优化6）
-    run_daily(stop_loss_check, time='14:50')
+    run_daily(stop_loss_check, time='10:00')
+    
+def initialize(context):
+    common_init(context)
+    set_params(context)
+    schedule_tasks(context)
 
+def after_code_changed(context):
+    unschedule_all()
+    initialize(context);
 
-# ================= 优化6：止损逻辑 =================
-def stop_loss_check(context):
-    """每日检查持仓ETF是否触发回撤止损"""
-    if not hasattr(g, 'stop_loss_drawdown'):
-        return
-    current_data = get_current_data()
-    positions = context.portfolio.positions
-    for code, pos in positions.items():
-        if pos.value <= 0 or code == g.cash_etf:
-            continue
-        current_price = current_data[code].last_price
-        
-        if code not in g.holding_high_price or g.holding_high_price[code] < current_price:
-            g.holding_high_price[code] = current_price
-        
-        high = g.holding_high_price[code]
-        drawdown = (high - current_price) / high
-        if drawdown >= g.stop_loss_drawdown:
-            target_value = pos.value * (1 - g.stop_loss_half_ratio)
-            log.info("优化6止损触发：%s 从高点 %.3f 回撤 %.2f%%，减仓至 %.0f元" % 
-                     (code, high, drawdown*100, target_value))
-            order_target_value(code, target_value)
-            g.holding_high_price[code] = current_price
+def before_trading_start(context):
+    g.assets = industry.ai_industry_assets
 
 
 # ================= 优化5：市场强度过滤 =================
@@ -147,6 +139,36 @@ def apply_market_filter(position_ratio, market_strength):
     else:
         return position_ratio
 
+   
+# ================= 优化6：止损逻辑 =================
+def stop_loss_check(context):
+    """风控：每日检查持仓ETF是否触发回撤止损"""
+    if not hasattr(g, 'stop_loss_drawdown'):
+        return
+    current_data = get_current_data()
+    positions = context.portfolio.positions
+    for code, pos in positions.items():
+        if pos.closeable_amount <= 0 or code == g.cash_etf:
+            continue
+        current_price = current_data[code].last_price
+        
+        prices = get_price(code, end_date=context.previous_date, count=10, fields='close', fq='pre')
+        close_prices = prices['close'].dropna()
+        ma5 = close_prices.rolling(5).mean().iloc[-1]
+        
+        if code not in g.holding_high_price or g.holding_high_price[code] < current_price:
+            g.holding_high_price[code] = current_price
+        
+        high = g.holding_high_price[code]
+        drawdown = (high - current_price) / high
+        lower_ma5 = current_price<ma5
+        
+        if (drawdown >= g.stop_loss_drawdown and g.stop_loss_half_ratio>0) or lower_ma5:
+            target_value = pos.value * (1 - g.stop_loss_half_ratio)
+            log.info("止损触发：%s 从高点 %.3f 回撤 %.2f%%，减仓至 %.0f元" % 
+                     (code, high, drawdown*100, target_value))
+            order_target_value(code, target_value)
+            g.holding_high_price[code] = current_price
 
 # ================= 改进1：波动率目标调整 =================
 def apply_volatility_target(position_ratio, context, selected_with_weights):
@@ -172,7 +194,7 @@ def apply_volatility_target(position_ratio, context, selected_with_weights):
     adj = min(adj, g.max_vol_adj)   # 避免过度加仓
     new_ratio = position_ratio * adj
     new_ratio = max(g.min_position, min(g.max_position, new_ratio))
-    log.info(f"改进1波动率目标: 组合波动率{total_vol:.2%}, 调整系数{adj:.2f}, 仓位{position_ratio:.2f}->{new_ratio:.2f}")
+    log.info(f"波动率目标: 组合波动率{total_vol:.2%}, 调整系数{adj:.2f}, 仓位{position_ratio:.2f}->{new_ratio:.2f}")
     return new_ratio
 
 
@@ -302,9 +324,8 @@ def calc_signals_and_clear(context):
     if not g.skip_rebalance:
         holdings = context.portfolio.positions
         for code in holdings:
-            if code != g.cash_etf:
-                log.info(f"清仓{code}")
-                order_target_value(code, 0)
+            log.info(f"清仓{code}")
+            order_target_value(code, 0)
         g.holding_high_price.clear()   # 重置止损记录
 
 
@@ -321,14 +342,23 @@ def buy_signals(context):
     
     for s in selected:
         target_value = available_value * s['weight']
-        log.info(f"  {s['code']}: 趋势{s['trend_dev']*100:.1f}%, 相对动量{s['rel_mom']*100:.2f}%, "
-                 f"得分{s['score']:.2f}, 权重{s['weight']*100:.0f}%, 金额{target_value:.0f}")
-        order_target_value(s['code'], target_value)
-        # 初始化止损最高价
         current_price = get_current_data()[s['code']].last_price
-        g.holding_high_price[s['code']] = current_price
+        amount = target_value / current_price
+        log.info(f"  {s['code']}: 趋势{s['trend_dev']*100:.1f}%, 相对动量{s['rel_mom']*100:.2f}%, "
+                 f"得分{s['score']:.2f}, 权重{s['weight']*100:.0f}%, 金额{target_value:.0f} 价格{current_price} 股数{amount}")
+        if amount>100:
+            order_target_value(s['code'], target_value)
+            g.holding_high_price[s['code']] = current_price
     
     # 剩余资金买货币基金
     cash_to_buy = context.portfolio.available_cash
     if cash_to_buy > 100:
         order_target_value(g.cash_etf, cash_to_buy)
+        
+def after_trading_end(context):
+    log.info(f"after_trading_end")
+    """
+    聚宽模拟盘对账 ↔ 实盘 持仓对账（以模拟盘为准）
+    """
+    if 'backtest' not in context.run_params.type:
+        bt_wrapper.sync_check_jq_sim_vs_real(context.portfolio.positions)

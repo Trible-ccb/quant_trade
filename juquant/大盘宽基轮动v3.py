@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 # 主流大宽基轮动 · 最终优化版
+# 包含：原版轮动 + 优化5（市场强度过滤）+ 优化6（单只止损）
+#      + 改进1（波动率目标仓位调整）
+#      + 改进2（相对强度排序 + 排名缓冲）
+#      + 改进5（相对动量 rel_mom）
 from jqdata import *
 import numpy as np
 
@@ -20,27 +24,46 @@ def process_initialize(context):
     log.info(f"process_initialize 重建配置 {datetime.datetime.now()}")
     # 初始化链接，同时覆盖默认下单函数
     bt_wrapper.configured()
-
+ 
+def after_trading_end(context):
+    log.info(f"after_trading_end @ {datetime.datetime.now()}")
+    """
+    聚宽模拟盘对账 ↔ 实盘 持仓对账（以模拟盘为准）
+    """
+    if 'backtest' not in context.run_params.type:
+        bt_wrapper.sync_check_jq_sim_vs_real(context.portfolio.positions)
+        
 # =======================实盘配置End=======================================
-
-
-def initialize(context):
-    
+   
+def set_targets(context):
     g.assets = [
-        '510300.XSHG',   # 沪深300
-        '513500.XSHG',   # 标普500
-        '159915.XSHE',   # 创业板
-        '513100.XSHG',    # 纳指100
+        '510300.XSHG',  # 沪深300
+        '513500.XSHG',  # 标普500
+        '159915.XSHE',  # 创业板
+        '513100.XSHG',  # 纳指100
         '518880.XSHG',  # 黄金ETF
-        '588880.XSHG',  # 科创板
-        '501018.XSHG',   # 南方原油
-        '513400.XSHG',   # 道琼斯
-        '510050.XSHG',   # 50ETF
-        '512890.XSHG',   # 红利ETF
+        '588080.XSHG',  # 科创板
+        '501018.XSHG',  # 南方原油
+        '513400.XSHG',  # 道琼斯
+        '159920.XSHE',  #恒生ETF
+        '512890.XSHG',  # 红利ETF
+        # '510050.XSHG',  # 50ETF
+        # '512500.XSHG',  # 500ETF
+        # '159845.XSHE',  # 1000ETF
+        # '159628.XSHE',  # 2000ETF
+        # '513520.XSHG',  #日经ETF
     ]
     g.cash_etf = '511880.XSHG'
-    
-    # 基础参数
+
+def common_init(context):
+    set_benchmark('000300.XSHG')
+    set_option('use_real_price', True)
+    set_option('avoid_future_data', True)
+    set_order_cost(OrderCost(open_tax=0, close_tax=0,
+                             open_commission=1/10000, close_commission=1/10000, min_commission=5), type='stock')
+    set_slippage(PriceRelatedSlippage(0.001))
+
+def set_params(context):
     g.ma_trend = 60
     g.mom_day = 20
     g.position_count = 2
@@ -58,6 +81,9 @@ def initialize(context):
     
     g.weak_market_min_position = 0.05
     
+    # ========== 优化6参数（单只ETF止损） ==========
+    g.stop_loss_drawdown = 0.045
+    g.stop_loss_half_ratio = 1
     g.holding_high_price = {}
     
     # ========== 改进1参数（波动率目标调整） ==========
@@ -72,16 +98,69 @@ def initialize(context):
     # ========== 改进5参数（相对动量） ==========
     # 使用 rel_mom 替代绝对动量，权重更高
     
-    set_benchmark('000300.XSHG')
-    set_option('use_real_price', True)
-    set_option('avoid_future_data', True)
-    set_order_cost(OrderCost(open_tax=0, close_tax=0,
-                             open_commission=1/10000, close_commission=1/10000, min_commission=5), type='stock')
-    set_slippage(PriceRelatedSlippage(0.001))
-    
+def schedule_tasks(context):
     # 主调仓：每周一执行
-    run_weekly(calc_signals_and_clear, weekday=1, time='09:30')
-    run_weekly(buy_signals, weekday=1, time='09:31')
+    unschedule_all()
+    # run_daily(calc_signals_and_clear, time='13:00')
+    # run_daily(buy_signals, time='13:01')
+    
+    run_weekly(calc_signals_and_clear, weekday=1, time='13:30')
+    run_weekly(buy_signals, weekday=1, time='13:31')
+    
+    # run_weekly(calc_signals_and_clear, weekday=2, time='13:00')
+    # run_weekly(buy_signals, weekday=2, time='13:01')
+    
+    # run_weekly(calc_signals_and_clear, weekday=3, time='13:00')
+    # run_weekly(buy_signals, weekday=3, time='13:01')
+    
+    # run_weekly(calc_signals_and_clear, weekday=4, time='13:00')
+    # run_weekly(buy_signals, weekday=4, time='13:01')
+    
+    # run_weekly(calc_signals_and_clear, weekday=5, time='13:00')
+    # run_weekly(buy_signals, weekday=5, time='13:01')
+    
+    # 每日止损检查（优化6）
+    # run_daily(stop_loss_check, time='10:30')
+    
+def after_code_changed(context):
+    # 修复模拟盘热更新时，新增参数未初始化的报错
+    initialize(context)
+    
+def initialize(context):
+    common_init(context)
+    set_targets(context)
+    set_params(context)
+    schedule_tasks(context)
+
+# ================= 优化6：止损逻辑 =================
+def stop_loss_check(context):
+    """每日检查持仓ETF是否触发回撤止损"""
+    if not hasattr(g, 'stop_loss_drawdown'):
+        return
+    current_data = get_current_data()
+    positions = context.portfolio.positions
+    for code, pos in positions.items():
+        if pos.closeable_amount <= 0 or code == g.cash_etf or can_not_deal(code):
+            continue
+        current_price = current_data[code].last_price
+        
+        prices = get_price(code, end_date=context.previous_date, count=10, fields='close', fq='pre')
+        close_prices = prices['close'].dropna()
+        ma5 = close_prices.rolling(5).mean().iloc[-1]
+        
+        if code not in g.holding_high_price or g.holding_high_price[code] < current_price:
+            g.holding_high_price[code] = current_price
+        
+        high = g.holding_high_price[code]
+        drawdown = (high - current_price) / high
+        lower_ma5 = current_price<ma5
+        
+        if (drawdown >= g.stop_loss_drawdown and g.stop_loss_half_ratio>0) or lower_ma5:
+            target_value = pos.value * (1 - g.stop_loss_half_ratio)
+            log.info("止损触发：%s 从高点 %.3f 回撤 %.2f%%，减仓至 %.0f元" % 
+                     (code, high, drawdown*100, target_value))
+            order_target_value(code, target_value)
+            g.holding_high_price[code] = current_price
 
 
 # ================= 优化5：市场强度过滤 =================
@@ -175,11 +254,12 @@ def calc_signals_and_clear(context):
     bench_df = get_price('000300.XSHG', end_date=context.previous_date,
                          count=g.ma_trend + g.mom_day + 10, fields='close', fq='pre')
     bench_close = bench_df['close'].dropna()
-    
+    cur_data = get_current_data()
     signals = []
     for code in g.assets:
         df = close_data.get(code)
-        if df is None or len(df.dropna()) < g.ma_trend + 1:
+        is_pause = cur_data[code].paused
+        if is_pause or df is None or len(df.dropna()) < g.ma_trend + 1:
             continue
         close = df['close'].dropna()
         current = close.iloc[-1]
@@ -286,13 +366,33 @@ def calc_signals_and_clear(context):
     
     # 清仓（仅当需要调仓时）
     if not g.skip_rebalance:
-        holdings = context.portfolio.positions
-        for code in holdings:
+        clear_stocks(context)
+        
+def can_not_deal(code):
+    cur_data = get_current_data()
+    cur_price = cur_data[code].last_price
+    no_price = cur_price is None or cur_price <=0
+    is_paused = cur_data[code].paused
+    is_st = cur_data[code].is_st
+    is_limit = cur_price>=cur_data[code].high_limit or cur_price<=cur_data[code].low_limit 
+    can_not_deal = (no_price or is_paused or is_st or is_limit)
+    if can_not_deal:
+        log.info(f"{code} can_not_deal={can_not_deal},no_price={no_price} is_paused={is_paused} is_st={is_st} is_limit={is_limit}")
+    return can_not_deal
+    
+def clear_stocks(context):
+    holdings = context.portfolio.positions
+    cur_data = get_current_data()
+    for code in holdings:
+        if can_not_deal(code):
+            log.info(f"clear_stock {code} failed, can_not_deal")
+            continue
+        pos = holdings[code]
+        if pos.closeable_amount > 0:
             log.info(f"清仓{code}")
-            order_target_value(code, 0)
-        g.holding_high_price.clear()   # 重置止损记录
-
-
+            order(code, -pos.closeable_amount)
+    g.holding_high_price.clear()   # 重置止损记录
+    
 def buy_signals(context):
     if not g.selected or g.skip_rebalance:
         return
@@ -303,25 +403,22 @@ def buy_signals(context):
     log.info("="*50)
     log.info(f"市场状态: 仓位{position_ratio*100:.0f}%, 可用资金{available_value:.0f}")
     log.info(f"选中标的: {[s['code'] for s in selected]}")
-    
+    cur_data = get_current_data()
     for s in selected:
+        code = s['code']
+        if can_not_deal(code):
+            log.info(f"buy_signals {code} failed, can_not_deal")
+            continue
         target_value = available_value * s['weight']
-        log.info(f"  {s['code']}: 趋势{s['trend_dev']*100:.1f}%, 相对动量{s['rel_mom']*100:.2f}%, "
-                 f"得分{s['score']:.2f}, 权重{s['weight']*100:.0f}%, 金额{target_value:.0f}")
-        order_target_value(s['code'], target_value)
-        # 初始化止损最高价
-        current_price = get_current_data()[s['code']].last_price
-        g.holding_high_price[s['code']] = current_price
+        current_price = cur_data[code].last_price
+        amount = target_value / current_price
+        log.info(f"  {code}: 趋势{s['trend_dev']*100:.1f}%, 相对动量{s['rel_mom']*100:.2f}%, "
+                 f"得分{s['score']:.2f}, 权重{s['weight']*100:.0f}%, 金额{target_value:.0f} 价格{current_price} 股数{amount}")
+        if amount>100:
+            order_target_value(code, target_value)
+            g.holding_high_price[code] = current_price
     
     # 剩余资金买货币基金
     cash_to_buy = context.portfolio.available_cash
     if cash_to_buy > 100:
         order_target_value(g.cash_etf, cash_to_buy)
-        
-def after_trade(context):
-    log.info(f"after_trade")
-    """
-    聚宽模拟盘对账 ↔ 实盘 持仓对账（以模拟盘为准）
-    """
-    if 'backtest' not in context.run_params.type:
-        bt_wrapper.sync_check_jq_sim_vs_real(context.portfolio.positions)

@@ -98,17 +98,19 @@ def sync_check_jq_sim_vs_real(sim_positions):
             # 差异
             diff = sim_qty - real_qty
             total_diff += abs(diff)
+            diff_price = sim_price - real_price
+            diff_rate =  diff_price / sim_price if sim_price != 0 else 0.0
 
             # 状态
-            if diff == 0 and abs(sim_price - real_price) < 0.0001:
+            if diff == 0 and abs(diff_price) < 0.0001:
                 status = "✅ 完全一致"
             elif diff != 0:
                 if real_qty == 0:
                     status = "🅾️ 模拟盘有，实盘无"
                 else:
                     status = f"🅾️ 持仓量不一致，与模拟盘差={diff}股"
-            elif abs(sim_price - real_price) >= 0.0001:
-                status = f"🅾️ 价格不一致，与模拟盘差价={sim_price - real_price}"
+            elif abs(diff_price) >= 0.0001:
+                status = f"🅾️ 价格不一致，滑点={diff_rate:.2%}，差价={diff_price:.5f}"
             else:
                 status = "✅ 一致"
 
@@ -136,13 +138,13 @@ def sync_check_jq_sim_vs_real(sim_positions):
                 diff = -real_qty
                 total_diff += abs(diff)
 
-                check_rows.append([
-                    security,
-                    sim_qty, real_qty, diff,
-                    round(sim_price, 3), round(real_price, 3),
-                    round(sim_value, 2), round(real_value, 2),
-                    "⚠️ 实盘有，模拟盘无"
-                ])
+                # check_rows.append([
+                #     security,
+                #     sim_qty, real_qty, diff,
+                #     round(sim_price, 3), round(real_price, 3),
+                #     round(sim_value, 2), round(real_value, 2),
+                #     "⚠️ 实盘有，模拟盘无"
+                # ])
 
         # ====================== 3. 打印表格 ======================
         print_table=True

@@ -26,13 +26,6 @@ echo ============================================================
 echo.
 
 :: ---------- 1. Python ----------
-echo [1/6] Checking Python...
-where python >nul 2>&1
-if %errorlevel% equ 0 (
-    for /f "tokens=2 delims= " %%i in ('python --version 2^>^&1') do set PYTHON_VER=%%i
-    echo Found Python %PYTHON_VER%
-    goto :PYTHON_OK
-)
 
 echo Downloading Python installer...
 powershell -Command "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_INSTALLER%'"

@@ -53,7 +53,7 @@ import bullet_trade_jq_wrapper as bt_wrapper
 import datetime
 
 # 默认下单函数
-TRADE_TYPE = 'live'  # 'live':实盘模式,其他值：用聚宽平台默认下单函数
+TRADE_TYPE = 'no_live'  # 'live':实盘模式,其他值：用聚宽平台默认下单函数
 (order,order_target_value,order_value,order_target)  = bt_wrapper.wrap_orders(order, order_target_value, order_value, order_target,TRADE_TYPE,log_func=log.info)
 # 初始化函数，聚宽重启/代码刷新时调用
 def process_initialize(context):
@@ -85,9 +85,9 @@ def set_params(context):
     """
     #g.portfolio_value_proportion = [0.35, 0.1, 0.35, 0.2]  # 小市值/ETF反弹/ETF轮动/白马攻防 (实盘)
     # g.portfolio_value_proportion = [0.4, 0.2, 0.4, 0]  # 小市值/ETF反弹/ETF轮动 (实盘/短回测)
-    # g.portfolio_value_proportion = [0.5, 0, 0.5, 0]  # 小市值/ETF轮动 (用于长回测)
+    g.portfolio_value_proportion = [0.5, 0, 0.5, 0]  # 小市值/ETF轮动 (用于长回测)
     # g.portfolio_value_proportion = [0.35, 0, 0.35, 0.3]  # 小市值/ETF轮动/白马 (用于长回测)
-    g.portfolio_value_proportion = [0, 0, 0.5, 0]  # 仅开启策略3（ETF轮动）
+    # g.portfolio_value_proportion = [0, 0, 1, 0]  # 仅开启策略3（ETF轮动）
     # g.portfolio_value_proportion = [1, 0, 0, 0]  # 仅小市值
 
     g.starting_cash = context.portfolio.total_value
@@ -1435,11 +1435,8 @@ include_now=False, end_dt=timeStr, fq_ref_date=None)
     if len(prices): 
         for i in range(0,len(prices)):
             volumeSum += prices[i]['volume']
-        if volumeSum<=0:
-            log.warn(f"ignore {code} cause no {timeStr} volume,{prices}")
-            return True
-        return False
-    return False
+        
+    return volumeSum<=0
     
 def get_ranked_etfs_172(context):
     etf_metrics = []
@@ -1456,6 +1453,7 @@ def get_ranked_etfs_172(context):
         if metrics and (g.min_score_threshold < metrics['score'] < g.max_score_threshold):
             etf_metrics.append(metrics)
     etf_metrics.sort(key=lambda x: x['score'], reverse=True)
+    log.warn(f"get_ranked_etfs_172 {metrics}")
     return etf_metrics
 
 
@@ -1564,6 +1562,7 @@ def calculate_momentum_metrics_172(context, etf):
 
 def strategy_3_sell(context):
     ranked = get_cached_rankings(context)
+    log.info(f"strategy_3_sell {ranked}")
     target_etfs = []
     for m in ranked[:g.holdings_num]:
         if m['score'] >= g.min_score_threshold:
@@ -1577,6 +1576,7 @@ def strategy_3_sell(context):
             continue
         if s not in target_set:
             smart_order_target_value_172(s, 0, context)
+    log.info(f"strategy_3_sell end {target_set}")
 
 
 def check_defensive_etf_available_172(context):
@@ -1661,6 +1661,7 @@ def smart_order_target_value_172(security, target_value, context):
 
 def strategy_3_buy(context):
     ranked = get_cached_rankings(context)
+    log.info(f"strategy_3_buy start {ranked}")
     target_etfs = []
     for m in ranked:
         if len(target_etfs) >= g.holdings_num:
@@ -1674,6 +1675,7 @@ def strategy_3_buy(context):
             return
 
     to_sell = [s for s in g.strategy_holdings[3] if s not in target_etfs]
+    log.info(f"strategy_3_buy to_sell {to_sell}")
     if to_sell:
         return
 
@@ -1688,7 +1690,7 @@ def strategy_3_buy(context):
                 current_val = pos.total_amount * pos.price
         if abs(current_val - val_per) > val_per * 0.05 or current_val == 0:
             smart_order_target_value_172(etf, val_per, context)
-
+    log.info(f"strategy_3_buy end {target_etfs}")
 
 """ ====================== 策略4: 白马攻防 ====================== """
 
