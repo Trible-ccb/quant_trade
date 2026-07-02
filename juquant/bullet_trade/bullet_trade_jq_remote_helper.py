@@ -34,7 +34,7 @@ _CLIENT: Optional["_ShortLivedClient"] = None
 _DATA_CLIENT: Optional["RemoteDataClient"] = None
 _BROKER_CLIENT: Optional["RemoteBrokerClient"] = None
 # 存放聚宽平台原生 order/order_target/order_value/order_target_value 函数的全局变量
-_ORDERS_FUNC = {'live':False}
+_ORDERS_FUNC = {'live':True}
 
 # 全局调试开关
 _DEBUG: bool = True
@@ -69,9 +69,9 @@ def configure(
     account_key: Optional[str] = None,
     sub_account_id: Optional[str] = None,
     tls_cert: Optional[str] = None,
-    retries: int = 2,
+    retries: int = 0,
     retry_interval: float = 0.5,
-    rpc_timeout: float = 60.0,
+    rpc_timeout: float = 15.0,
     debug: bool = True,
 ) -> None:
     """
@@ -84,9 +84,9 @@ def configure(
         account_key: 账户键，可选
         sub_account_id: 子账户 ID，可选
         tls_cert: TLS 证书文件路径，可选
-        retries: 失败重试次数，默认 2
+        retries: 失败重试次数，默认 0
         retry_interval: 重试间隔（秒），默认 0.5
-        rpc_timeout: RPC 超时时间（秒），默认 60.0
+        rpc_timeout: RPC 超时时间（秒），默认 15.0
         debug: 是否启用调试日志，默认 True
     """
     global _CLIENT, _DATA_CLIENT, _BROKER_CLIENT, _DEBUG
@@ -249,6 +249,7 @@ class RemotePosition:
         available: Optional[int] = None,
         frozen: Optional[int] = None,
         market: Optional[str] = None,
+        name: Optional[str] = None,
     ):
         self.security = security
         self.amount = amount
@@ -257,6 +258,7 @@ class RemotePosition:
         self.available = available if available is not None else amount
         self.frozen = frozen if frozen is not None else 0
         self.market = market
+        self.name = name
 
 
 class RemoteAccount:
@@ -405,6 +407,7 @@ class RemoteBrokerClient:
                     available=available,
                     frozen=frozen,
                     market=row.get("market"),
+                    name=row.get("name"),
                 )
             )
         return positions
@@ -559,6 +562,7 @@ class RemoteBrokerClient:
                 "side": side,
                 "amount": amount,
                 "style": style,
+                "wait_timeout":wait_timeout
             })
             
             _log("DEBUG", "[下单] 发送下单请求: payload={}", payload)
@@ -662,9 +666,9 @@ class _ShortLivedClient:
         token: str,
         *,
         tls_cert: Optional[str] = None,
-        retries: int = 2,
+        retries: int = 0,
         retry_interval: float = 0.5,
-        rpc_timeout: float = 30.0,
+        rpc_timeout: float = 15.0,
     ):
         self.host = host
         self.port = port
@@ -936,48 +940,62 @@ def _df_from_payload(payload: Dict[str, Any]) -> pd.DataFrame:
 
 # --------- 便捷函数（JQ 兼容） ----------
 def order(security: str, amount: int, price: Optional[float] = None, side: Optional[str] = None, wait_timeout: float = 0) -> RemoteOrder:
-    order = _ORDERS_FUNC['order']
+    order = _ORDERS_FUNC.get('order')
+    is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order:
         _log("INFO", f"代理聚宽下单{security},数量{amount}")
         order_result = order(security, amount)
-
-    if _ORDERS_FUNC['live']:
-        order_result = get_broker_client().order(security, amount, price=price, side=side, wait_timeout=wait_timeout)
+    if is_live:
+        try:
+            order_result = get_broker_client().order(security, amount, price=price, side=side, wait_timeout=wait_timeout)
+        except Exception as e:
+            _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
 def order_value(security: str, value: float, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
-    order_value = _ORDERS_FUNC['order_value']
+    order_value = _ORDERS_FUNC.get('order_value')
+    is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order_value:
         _log("INFO", f"代理聚宽下单{security},市值{value}")
         order_result = order_value(security, value)
 
-    if _ORDERS_FUNC['live']:
-        order_result = get_broker_client().order_value(security, value, price=price, wait_timeout=wait_timeout)
+    if is_live:
+        try:
+            order_result = get_broker_client().order_value(security, value, price=price, wait_timeout=wait_timeout)
+        except Exception as e:
+            _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
 def order_target(security: str, target: int, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
-    order_target = _ORDERS_FUNC['order_target']
+    order_target = _ORDERS_FUNC.get('order_target')
+    is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order_target:
         _log("INFO", f"代理聚宽下单{security},目标数量{target}")
         order_result = order_target(security, target)
-    if _ORDERS_FUNC['live']:
-        order_result = get_broker_client().order_target(security, target, price=price, wait_timeout=wait_timeout)
+    if is_live:
+        try:
+            order_result = get_broker_client().order_target(security, target, price=price, wait_timeout=wait_timeout)
+        except Exception as e:
+            _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
 def order_target_value(security: str, target_value: float, price: Optional[float] = None, wait_timeout: float = 0) -> RemoteOrder:
-    order_target_value = _ORDERS_FUNC['order_target_value']
+    order_target_value = _ORDERS_FUNC.get('order_target_value')
+    is_live = _ORDERS_FUNC.get('live', False)
     order_result = None
     if order_target_value:
-        _log("INFO", f"代理聚宽下单{security},目标市值{target_value}")
         order_result = order_target_value(security, target_value)
-    if _ORDERS_FUNC['live']:
-        order_result = get_broker_client().order_target_value(security, target_value, price=price, wait_timeout=wait_timeout)
+    if is_live:
+        try:
+            order_result = get_broker_client().order_target_value(security, target_value, price=price, wait_timeout=wait_timeout)
+        except Exception as e:
+            _log("ERROR", "[RPC] 实盘下单失败: {}, 堆栈:\n{}", e, traceback.format_exc())
     return order_result
 
 
