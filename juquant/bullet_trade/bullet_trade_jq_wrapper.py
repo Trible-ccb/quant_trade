@@ -1,41 +1,115 @@
 import json
+import traceback
+
 from jqdata import *
 import bullet_trade_jq_remote_helper as bt
 
 # ===== 实盘配置区域 =====
-BT_REMOTE_HOST = 'x.x.x.x'  #远程qmt服务器ECS公网IP
+BT_REMOTE_HOST = 'xxx'   #远程qmt服务器ECS公网IP
 BT_REMOTE_TOKEN = 'xxx'  #修改为你自己的服务器QMT_SERVER_TOKEN秘钥
 BT_REMOTE_PORT = 58620              #远程qmt服务器端port
 ACCOUNT_KEY = None  # 可选
 SUB_ACCOUNT = None  # 可选
 
-def configured():
-    if not BT_REMOTE_TOKEN:
-        raise RuntimeError("请先在 BT_REMOTE_HOST/BT_REMOTE_PORT/BT_REMOTE_TOKEN/ACCOUNT_KEY/SUB_ACCOUNT 填写远程服务器配置")
+_ORDERS_FUNC = {'live':False}
+
+def configured(context, live = False, host=BT_REMOTE_HOST, token=BT_REMOTE_TOKEN):
+    if not BT_REMOTE_HOST or not BT_REMOTE_TOKEN:
+        raise RuntimeError("请先在填写远程服务器配置")
+    
     bt.configure(
-        host=BT_REMOTE_HOST,
+        host=host,
         port=BT_REMOTE_PORT,
-        token=BT_REMOTE_TOKEN,
+        token=token,
         account_key=ACCOUNT_KEY,
         sub_account_id=SUB_ACCOUNT,
     )
-    # 让券商端可用数据补价
-    bt.get_broker_client().bind_data_client(bt.get_data_client())
+    # 模拟盘的情况下才生效live
+    run_type = bt._run_type_from_context(context)
+    _ORDERS_FUNC['live'] = live
+    print(f"✅ 已配置远程QMT交易助手，host={host}, port={BT_REMOTE_PORT}, {_ORDERS_FUNC}")
 
-def wrap_orders(_order, _order_target_value, _order_value, _order_target,trade_type,log_func=None):
-    if log_func is None:
-        log_func = print
-    if trade_type == 'live':
-        log_func(f"实盘下单order时，保持在聚宽模拟盘下单函数动作")
-        bt.wrap_orders(_order, _order_target_value, _order_value, _order_target, True)
-        return bt.order,bt.order_target_value,bt.order_value,bt.order_target
-    elif trade_type == 'live_no_buy':
-        log_func(f"走实盘下单链路，但是不真实下单，保持在聚宽模拟盘下单函数动作")
-        bt.wrap_orders(_order, _order_target_value, _order_value, _order_target, False)
-        return bt.order,bt.order_target_value,bt.order_value,bt.order_target
-    else:
-        log_func(f"使用聚宽平台自带order")
-        return _order, _order_target_value, _order_value, _order_target
+def qmt_is_ok():
+    """
+    检查远程QMT交易助手是否可用
+    """
+    try:
+        acct = bt.get_account()
+        if acct:
+            print(f"✅ 远程QMT交易助手状态正常，账户信息:现金={acct.available_cash:.2f} 总资产={acct.total_value:.2f}")
+            return True
+        else:
+            print(f"❌ 远程QMT交易助手状态异常")
+            return False
+    except Exception as e:
+        print(f"❌ 远程QMT交易助手检查异常: {e} \n {traceback.format_exc()}")
+        return False
+    
+def get_orders_func(_order, _order_target, _order_value, _order_target_value):
+    _ORDERS_FUNC['order'] = _order
+    _ORDERS_FUNC['order_target_value'] = _order_target_value
+    _ORDERS_FUNC['order_value'] = _order_value
+    _ORDERS_FUNC['order_target'] = _order_target
+    return (wrap_order, wrap_order_target, wrap_order_value, wrap_order_target_value)
+
+def wrap_order(security: str, amount: int, style=None,pindex=0):
+    order = _ORDERS_FUNC.get('order')
+    is_live = _ORDERS_FUNC.get('live', False)
+    order_result = None
+    if order:
+        print(f"聚宽下单{security},数量{amount} style={style}")
+        order_result = order(security, amount,style=style,pindex=pindex)
+    if is_live:
+        try:
+            real_order_id = bt.order(security, amount, style=style)
+        except Exception as e:
+            print(f"[RPC] order实盘下单失败: {e} \n {traceback.format_exc()}")
+    return order_result
+
+def wrap_order_value(security: str, value: float,style=None,pindex=0):
+    order_value = _ORDERS_FUNC.get('order_value')
+    is_live = _ORDERS_FUNC.get('live', False)
+    order_result = None
+    if order_value:
+        print(f"代理聚宽下单{security},市值{value} style={style}")
+        order_result = order_value(security, value,style=style,pindex=pindex)
+
+    if is_live:
+        try:
+            real_order_id = bt.order_value(security, value,style=style)
+        except Exception as e:
+            print(f"[RPC] order_value实盘下单失败: {e} \n {traceback.format_exc()}")
+    return order_result
+
+
+def wrap_order_target(security: str, target: int, style=None,pindex=0):
+    order_target = _ORDERS_FUNC.get('order_target')
+    is_live = _ORDERS_FUNC.get('live', False)
+    order_result = None
+    if order_target:
+        print(f"代理聚宽下单{security},目标数量{target} style={style}")
+        order_result = order_target(security, target,style=style,pindex=pindex)
+    if is_live:
+        try:
+            order_result = bt.order_target(security, target, style=style)
+        except Exception as e:
+            print(f"[RPC] order_target实盘下单失败: {e} \n {traceback.format_exc()}")
+    return order_result
+
+
+def wrap_order_target_value(security: str, target_value: float, style=None,pindex=0) :
+    order_target_value = _ORDERS_FUNC.get('order_target_value')
+    is_live = _ORDERS_FUNC.get('live', False)
+    order_result = None
+    if order_target_value:
+        print(f"代理聚宽下单{security},目标市值{target_value} style={style}")
+        order_result = order_target_value(security, target_value,style=style,pindex=pindex)
+    if is_live:
+        try:
+            real_order_id = bt.order_target_value(security, target_value, style=style)
+        except Exception as e:
+            print(f"[RPC] order_target_value实盘下单失败: {e} \n {traceback.format_exc()}")
+    return order_result
 
 def sync_check_jq_sim_vs_real(sim_positions):
     """
@@ -136,8 +210,8 @@ def sync_check_jq_sim_vs_real(sim_positions):
                 real_value = real.market_value
 
                 diff = -real_qty
-                total_diff += abs(diff)
 
+                # total_diff += abs(diff)
                 # check_rows.append([
                 #     security,
                 #     sim_qty, real_qty, diff,
@@ -174,7 +248,8 @@ def sync_check_jq_sim_vs_real(sim_positions):
        
 __all__ = [
     "configured",
-    "wrap_orders",
+    "qmt_is_ok",
+    "get_orders_func",
     "sync_check_jq_sim_vs_real",
     "BT_REMOTE_HOST",
     "BT_REMOTE_TOKEN"

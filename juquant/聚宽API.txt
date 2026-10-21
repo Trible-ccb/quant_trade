@@ -1,0 +1,138 @@
+
+create_backtest(algorithm_id, start_date, end_date, frequency="day", initial_cash=10000, initial_positions=None, extras=None, name=None, code="", benchmark=None, python_version=2, use_credit=False)
+通过一个策略ID从研究中创建回测，只能在研究中使用，目前不支持在回测及模拟交易中使用；
+
+参数：
+
+algorithm_id: 策略ID，从策略编辑页的 url 中获取, 比如 '/algorithm/index/edit?algorithmId=xxxx'，则策略ID为: xxxx。如下图所示：
+
+start_date: 回测开始日期
+end_date: 回测结束日期
+frequency: 数据频率，支持 day, minute, tick
+initial_cash: 初始资金
+extras: 额外参数，一个 dict， 用于设置全局的 g 变量，如 extras={'x':1, 'y':2}，则回测中 g.x = 1, g.y = 2，需要注意的是，该参数的值是
+在 initialize 函数执行之后
+才设置给 g 变量的，所以这会覆盖掉 initialize 函数中 g 变量同名属性的值
+name: 回测名, 用于指定回测名称, 如果没有指定则默认采用策略名作为回测名
+initial_positions: 初始持仓。持仓会根据价格换成现金加到初始资金中，如果没有给定价格则默认获取股票最近的价格。格式如下:
+initial_positions = [
+    {
+        'security':'000001.XSHE',
+        'amount':'100',
+    },
+    {
+        'security':'000063.XSHE',
+        'amount':'100',
+        'avg_cost': '1.0'
+    },
+]
+code：策略代码。现在支持从研究中传入策略代码进行回测。指定之后将使用传入的代码来创建回测。
+benchmark: 为回测设置基准。默认为None，表示使用策略中原有set_benchmark设置的基准。若不为None，则表示使用当前传入的基准覆盖原策略的基准。benchmark支持的基准同set_benchmark
+python_version: 创建回测的python的版本，已废弃参数,目前只支持python3内核
+use_credit:是否允许消耗积分新建回测。当每个自然日内编译运行、回测超过免费时间时，继续运行每30分钟需消耗2积分。默认为False，表示不允许消耗积分新建回测，设为True表示接受消耗积分新建回测。需注意，对于已经在运行中的回测，此配置不生效。
+返回：
+
+一个字符串, 即 backtest_id。
+
+get_backtest 研究中获取回测与模拟交易信息
+gt = get_backtest(backtest_id)
+研究中获取回测与模拟交易信息，只能在研究中使用，目前不支持在回测及模拟交易中使用；使用方法及参考教程：
+
+参数优化及并行回测参考教程
+区分create_backtest(策略ID)和get_backtest(回测ID)
+create_backtest与get_backtest
+参数：
+
+backtest_id: 回测ID，从回测详情页以及模拟交易详情页的 url 中获取, 比如 '/algorithm/backtest/detail?backtestId='以及'/algorithm/live/index?backtestId='，则回测ID为:xxxx。如下图所示：
+img
+
+返回：
+
+gt.get_status():获取回测状态. 返回一个字符串，其含义分别为：
+
+none: 未开始
+running: 正在进行
+done: 完成
+failed: 失败
+canceled: 取消
+paused: 暂停
+deleted: 已删除
+gt.get_params()：获得回测参数. 返回一个 dict, 包含调用 create_backtest 时传入的所有信息. (注： algorithm_id，initial_positions，extras 只有在研究中创建的回测才能取到)
+
+gt.get_results()：获得收益曲线. 返回一个 list，每个交易日是一个 dict，键的含义如下：
+
+time: 时间
+returns: 收益
+benchmark_returns: 基准收益
+如果没有收益则返回一个空的 list
+gt.get_positions(start_date=None, end_date=None)：获得持仓详情. 返回一个 list，默认取所有回测时间段内的数据。每个交易日为一个 dict，键的含义为：
+
+time: 时间
+amount: 持仓数量,
+avg_cost: 开场均价,
+closeable_amount: 可平仓数量,
+daily_gains: 当日收益,
+gains: 累积收益,
+hold_cost: 持仓成本（期货）,
+margin: 保证金,
+price: 当前价格,
+security: 标的代码,
+security_name: 标的名,
+side: 仓位方向,
+today_amount: 今开仓量
+如果没有持仓则返回一个空的 list
+gt.get_orders(start_date=None, end_date=None)：获得交易详情. 返回一个 list，默认取所有回测时间段内的数据。每个交易日为一个 dict，键的含义为：
+
+time: 时间
+
+action: 开平仓，'open'/'close',
+
+amount: 数量,
+
+commission: 手续费,
+
+filled: 已成交量,
+
+gains: 收益,
+
+limit_price: 限价单委托价,
+
+match_time: 最新成交时间,
+
+price: 成交价,
+
+security: 标的代码,
+
+security_name: 标的名,
+
+side: 仓位方向,
+
+status: 订单状态,
+
+time: 委托时间,
+
+type: 委托方式，市价单/限价单
+
+如果没有交易则返回一个空的 list
+
+gt.get_records()：获得所有 record 记录. 返回一个 list，每个交易日为一个 dict，键是 time 以及调用 record() 函数时设置的值.
+
+gt.get_risk()：获得总的风险指标. 返回一个 dict，键是各类收益指标数据，如果没有风险指标则返回一个空的 dict.
+
+gt.get_period_risks()：获得分月计算的风险指标. 返回一个 dict，键是各类指标, 值为一个 pandas.DataFrame. 如果没有风险指标则返回一个空的 dict.
+
+gt.get_balances(start_date=None, end_date=None): 获取回测每日市值. 返回一个 list，默认取所有回测时间段内的数据。每个交易日为一个 dict
+
+示例：
+
+gt = get_backtest("xxxx")
+
+gt.get_status()        # 获取回测状态
+gt.get_params()        # 获取回测参数
+gt.get_results()       # 获取收益曲线
+gt.get_positions()     # 获取所有持仓列表
+gt.get_orders()        # 获取交易列表
+gt.get_records()       # 获取所有record()记录
+gt.get_risk()          # 获取总的风险指标
+gt.get_period_risks()  # 获取分月计算的风险指标
+gt.get_balances()      # 获取回测每日市值

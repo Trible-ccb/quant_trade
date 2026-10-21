@@ -17,7 +17,7 @@ QMT实盘交易连接（基于 bullet_trade 远程辅助模块）
 提供与聚宽风格一致的 order、order_target、get_account、get_positions 等 API。
 
 配置依赖
-服务器地址：host = "8.141.101.156"
+服务器地址：host = "***"
 
 端口：port = 58620（默认）
 
@@ -35,7 +35,7 @@ import bullet_trade_jq_remote_helper as bt
 
 python
 bt.configure(
-    host='8.141.101.156',
+    host='***',
     token='0011223344',
     port=58620,                 # 默认
     account_key='main',         # 可选

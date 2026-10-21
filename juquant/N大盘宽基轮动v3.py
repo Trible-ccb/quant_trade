@@ -1,0 +1,482 @@
+# -*- coding: utf-8 -*-
+# 主流大宽基轮动 · 最终优化版
+# 包含：原版轮动 + 优化5（市场强度过滤）+ 优化6（单只止损）
+#      + 改进1（波动率目标仓位调整）
+#      + 改进2（相对强度排序 + 排名缓冲）
+#      + 改进5（相对动量 rel_mom）
+from jqdata import *
+import numpy as np
+
+# =======================实盘配置Start=======================================
+import bullet_trade_jq_wrapper as bt_wrapper
+# 默认下单函数
+Live_Type = False  # 'True':启用实盘模式,False：不实盘
+(order,order_target_value,order_value,order_target)  = bt_wrapper.get_orders_func(order,order_target_value,order_value,order_target)
+# 初始化函数，聚宽重启/代码刷新时调用
+def s2_process_initialize(context):
+    """
+    聚宽重启/代码刷新时调用，此处完成所有初始化与任务注册。
+    """
+    # 初始化链接，同时覆盖默认下单函数
+    bt_wrapper.configured(context,Live_Type)
+
+
+def initialize(context):
+    s2_initialize(context)
+
+def after_trading_end(context):
+    s2_after_trading_end(context)
+
+def after_code_changed(context):
+    unschedule_all()
+    s2_after_code_changed(context)
+
+def before_trading_start(context):
+    try:
+        if 'sim_trade' != context.run_params.type:
+            return
+        ok = bt_wrapper.qmt_is_ok()
+        if not ok:
+            send_message("QMT服务端异常，检查云服务器是否正常登录qmt")
+    except Exception as e:
+        print(f"before_trading_start检查qmt异常")
+        
+def s2_after_trading_end(context):
+    """
+    聚宽模拟盘对账 ↔ 实盘 持仓对账（以模拟盘为准）
+    """
+    if 'sim_trade' == context.run_params.type:
+        bt_wrapper.sync_check_jq_sim_vs_real(get_s2_portfolio_positions(context))
+        
+# =======================实盘配置End=======================================
+
+# =======================辅助函数：获取子账户信息===========================
+def get_s2_portfolio(context):
+    if len(context.subportfolios) > 1:
+        return context.subportfolios[1]
+    return context.subportfolios[0]
+
+def get_s2_portfolio_positions(context):
+    port = get_s2_portfolio(context)
+    if hasattr(port, 'long_positions'):
+        return port.long_positions
+    return context.portfolio.positions
+# ========================================================================
+
+def s2_set_targets(context):
+    g.s2_assets = [
+        '510300.XSHG',  # 沪深300
+        '513500.XSHG',  # 标普500
+        '159915.XSHE',  # 创业板
+        '513100.XSHG',  # 纳指100
+        '518880.XSHG',  # 黄金ETF
+        '588080.XSHG',  # 科创板
+        '159518.XSHG',  # 南方原油
+        '513400.XSHG',  # 道琼斯
+        '159920.XSHE',  #恒生ETF
+        '512890.XSHG',  # 红利ETF
+        # '510050.XSHG',  # 50ETF
+        # '512500.XSHG',  # 500ETF
+        # '159845.XSHE',  # 1000ETF
+        # '159628.XSHE',  # 2000ETF
+        # '513520.XSHG',  #日经ETF
+    ]
+    g.s2_cash_etf = '511880.XSHG'
+    
+
+def s2_common_init(context):
+    set_benchmark('000300.XSHG')
+    set_option('use_real_price', True)
+    set_option('avoid_future_data', True)
+    set_order_cost(OrderCost(open_tax=0, close_tax=0,
+                             open_commission=1/10000, close_commission=1/10000, min_commission=5), type='fund')
+    set_order_cost(OrderCost(open_tax=0, close_tax=1/1000,
+                             open_commission=1/10000, close_commission=1/10000, min_commission=5), type='stock')
+    set_slippage(PriceRelatedSlippage(0.001))
+
+def s2_set_params(context):
+    g.s2_ma_trend = 60
+    g.s2_mom_day = 20
+    g.s2_position_count = 2
+    
+    # 仓位动态调整参数（原版）
+    g.s2_base_position = 1.0
+    g.s2_max_position = 1.0
+    g.s2_min_position = 0
+    g.s2_momentum_threshold_high = 0.03
+    g.s2_momentum_threshold_low = -0.02
+    
+    # ========== 优化5参数（市场强度过滤） ==========
+    g.s2_ma_slope_threshold = -0.01
+    g.s2_enable_cross_market_filter = True
+    
+    g.s2_weak_market_min_position = 0.05
+    
+    # ========== 优化6参数（单只ETF止盈） ==========
+    g.s2_take_profit_up_ma20 = 0.1
+    g.s2_take_profit_fix_rate = 0.05
+    
+    # ========== 改进1参数（波动率目标调整） ==========
+    g.s2_vol_target_lookback = 20        # 波动率计算窗口
+    g.s2_target_annual_vol = 0.18        # 目标年化波动率 18%
+    g.s2_max_vol_adj = 1.5               # 最大上调系数
+    
+    # ========== 改进2参数（排名缓冲） ==========
+    g.s2_rebalance_threshold = 0.05      # 得分变化超过5%才强制调仓（预留，当前只做持仓比较）
+    g.s2_skip_rebalance = False           # 是否跳过本次调仓
+    
+def s2_schedule_tasks(context):
+    # 主调仓：每周一执行
+    run_weekly(s2_calc_signals_and_clear, 1, time='13:30')
+    run_weekly(s2_buy_signals, 1, time='13:31')
+    run_daily(s2_take_profit_check, "14:46")
+
+    
+def s2_after_code_changed(context):
+    # 修复模拟盘热更新时，新增参数未初始化的报错
+    s2_common_init(context)
+    s2_set_targets(context)
+    s2_set_params(context)
+    s2_schedule_tasks(context)
+    
+def s2_initialize(context):
+    s2_common_init(context)
+    s2_set_targets(context)
+    s2_set_params(context)
+    s2_schedule_tasks(context)
+    g.s2_holding_high_price = {}
+
+# ================= 优化5：市场强度过滤 =================
+def s2_get_market_trend_strength(context):
+    """判断整体市场强弱，返回 -1(弱势)、0(中性)、1(强势)"""
+    sh_index = '000300.XSHG'
+    us_index = '513500.XSHG'
+    try:
+        sh_df = get_price(sh_index, end_date=context.previous_date, count=g.s2_ma_trend+10, fields='close', fq='pre')
+        us_df = get_price(us_index, end_date=context.previous_date, count=g.s2_ma_trend+10, fields='close', fq='pre')
+        sh_close = sh_df['close'].dropna()
+        us_close = us_df['close'].dropna()
+        if len(sh_close) < g.s2_ma_trend or len(us_close) < g.s2_ma_trend:
+            return 0
+        sh_ma = sh_close.rolling(g.s2_ma_trend).mean().iloc[-1]
+        us_ma = us_close.rolling(g.s2_ma_trend).mean().iloc[-1]
+        sh_current = sh_close.iloc[-1]
+        us_current = us_close.iloc[-1]
+        sh_above = sh_current > sh_ma
+        us_above = us_current > us_ma
+        
+        sh_ma_series = sh_close.rolling(g.s2_ma_trend).mean()
+        if len(sh_ma_series) >= 5:
+            sh_slope = (sh_ma_series.iloc[-1] - sh_ma_series.iloc[-5]) / sh_ma_series.iloc[-5]
+        else:
+            sh_slope = 0
+        us_ma_series = us_close.rolling(g.s2_ma_trend).mean()
+        if len(us_ma_series) >= 5:
+            us_slope = (us_ma_series.iloc[-1] - us_ma_series.iloc[-5]) / us_ma_series.iloc[-5]
+        else:
+            us_slope = 0
+        
+        if (not sh_above and sh_slope < g.s2_ma_slope_threshold) and (not us_above and us_slope < g.s2_ma_slope_threshold):
+            return -1
+        if sh_above and us_above and sh_slope > 0 and us_slope > 0:
+            return 1
+        return 0
+    except:
+        return 0
+
+def s2_take_profit_check(context):
+    take_fix_profit_check(context,g.s2_take_profit_fix_rate,pindex=1)
+
+def take_fix_profit_check(context,rate_limit,pindex=0):
+    """固定止盈法 每日检查持仓是否触发止盈"""
+    current_data = get_current_data()
+    positions = context.portfolio.positions
+    for code, pos in positions.items():
+        if pos.closeable_amount <= 0 or s2_can_not_deal(code):
+            continue
+        current_price = current_data[code].last_price
+                
+        cost = pos.avg_cost
+        rate = (current_price - cost)/cost
+        is_take_profit = rate>=rate_limit
+        if  is_take_profit:
+            log.info(f"{code}止盈触发：{current_price} rate={rate:.3%}%")
+            s2_safe_order_target_value(context,'sell',code, 0)
+
+def s2_apply_market_filter(position_ratio, market_strength):
+    """根据市场强度调整仓位"""
+    if market_strength == -1:
+        new_ratio = min(position_ratio, g.s2_weak_market_min_position)
+        log.info("优化5触发：市场弱势，仓位从 %.2f 降至 %.2f" % (position_ratio, new_ratio))
+        return new_ratio
+    elif market_strength == 1:
+        return min(position_ratio, g.s2_max_position)
+    else:
+        return position_ratio
+
+
+# ================= 改进1：波动率目标调整 =================
+def s2_apply_volatility_target(position_ratio, context, selected_with_weights):
+    """
+    根据已选中ETF的加权波动率调整整体仓位，使策略预期波动率接近目标值
+    selected_with_weights: list of (code, weight)
+    """
+    if not selected_with_weights:
+        return position_ratio
+    total_vol = 0
+    for code, weight in selected_with_weights:
+        prices = get_price(code, end_date=context.previous_date, count=g.s2_vol_target_lookback+1, 
+                           fields='close', fq='pre')['close']
+        rets = prices.pct_change().dropna()
+        if len(rets) < 5:
+            vol = 0.2  # 默认20%
+        else:
+            vol = rets.std() * np.sqrt(252)
+        total_vol += weight * vol
+    if total_vol <= 0:
+        return position_ratio
+    adj = g.s2_target_annual_vol / total_vol
+    adj = min(adj, g.s2_max_vol_adj)   # 避免过度加仓
+    new_ratio = position_ratio * adj
+    new_ratio = max(g.s2_min_position, min(g.s2_max_position, new_ratio))
+    log.info(f"波动率目标: 组合波动率{total_vol:.2%}, 调整系数{adj:.2f}, 仓位{position_ratio:.2f}->{new_ratio:.2f}")
+    return new_ratio
+
+
+# ================= 改进2 & 改进5：信号计算与排名缓冲 =================
+def s2_calc_signals_and_clear(context):
+    # 获取收盘价数据
+    close_data = {}
+    for code in g.s2_assets:
+        df = get_price(code, end_date=context.previous_date,
+                       count=g.s2_ma_trend + g.s2_mom_day + 10, fields='close', fq='pre')
+        close_data[code] = df
+    
+    # 获取基准序列（用于相对动量）
+    bench_df = get_price('000300.XSHG', end_date=context.previous_date,
+                         count=g.s2_ma_trend + g.s2_mom_day + 10, fields='close', fq='pre')
+    bench_close = bench_df['close'].dropna()
+    cur_data = get_current_data()
+    signals = []
+    for code in g.s2_assets:
+        df = close_data.get(code)
+        is_pause = cur_data[code].paused
+        if is_pause or df is None or len(df.dropna()) < g.s2_ma_trend + 1:
+            continue
+        close = df['close'].dropna()
+        current = close.iloc[-1]
+        ma = close.rolling(g.s2_ma_trend).mean().iloc[-1]
+        
+        trend_dev = (current / ma) - 1
+        
+        # 改进5：计算相对动量（相对于沪深300的20日超额收益）
+        etf_ret = current / close.iloc[-g.s2_mom_day-1] - 1
+        bench_ret = bench_close.iloc[-1] / bench_close.iloc[-g.s2_mom_day-1] - 1
+        rel_mom = etf_ret - bench_ret
+        
+        signals.append({
+            'code': code,
+            'trend_dev': trend_dev,
+            'rel_mom': rel_mom
+        })
+    
+    # 改进2：使用相对强度百分位作为得分（基于rel_mom）
+    # 先收集所有rel_mom，计算百分位
+    mom_values = [s['rel_mom'] for s in signals]
+    for s in signals:
+        # 相对强度百分位（过去20日相对动量的排名百分位）
+        rank = sum(1 for v in mom_values if v < s['rel_mom']) / len(mom_values)
+        s['rs_percentile'] = rank   # 0~1之间
+    
+    # 最终得分 = 趋势分 * (1 + 相对动量权重)
+    for s in signals:
+        # 趋势分沿用原逻辑
+        if -0.05 <= s['trend_dev'] <= 0.10:
+            trend_score = 1.0
+        elif s['trend_dev'] > 0.10:
+            trend_score = 0.7
+        else:
+            trend_score = 0.5 + (s['trend_dev'] + 0.05) * 5
+        
+        # 改进5：相对动量乘数放大（原绝对动量系数5改为相对动量系数10）
+        s['score'] = trend_score * (1 + s['rel_mom'] * 10)
+        # 同时保留百分位得分作为备用，这里直接用上述score
+    
+    signals.sort(key=lambda x: -x['score'])
+    
+    # 合格标的筛选（得分>0.8）
+    qualified = [s for s in signals if s['score'] > 0.8]
+    if len(qualified) == 0 and signals[0]['score'] > 0.5:
+        qualified = [signals[0]]
+    
+    selected = qualified[:min(g.s2_position_count, len(qualified))]
+    
+    # ---------- 改进2：排名缓冲，避免频繁调仓 ----------
+    # 获取当前持仓（不含货币基金）
+    positions = get_s2_portfolio_positions(context)
+    current_holdings = [code for code, pos in positions.items() 
+                        if pos.total_amount > 0 and code != g.s2_cash_etf]
+    new_selected_codes = [s['code'] for s in selected]
+    
+    # 如果持仓与候选完全相同，且得分差异不大（可选），则跳过调仓
+    if set(current_holdings) == set(new_selected_codes):
+        g.s2_skip_rebalance = True
+        log.info("改进2：持仓未变，跳过本次调仓")
+        return
+    else:
+        g.s2_skip_rebalance = False
+    
+    # 计算仓位比例（基于原版绝对动量最大值，保留原有逻辑）
+    # 注意：这里仍然使用原版 calculate_position_ratio，后续会经过市场过滤和波动率调整
+    def calculate_position_ratio(signals):
+        if not signals:
+            return g.s2_min_position
+        max_mom = max(s.get('rel_mom', s.get('mom', 0)) for s in signals)   # 使用相对动量代替原mom
+        if max_mom >= g.s2_momentum_threshold_high:
+            ratio = g.s2_max_position
+        elif max_mom <= g.s2_momentum_threshold_low:
+            ratio = g.s2_min_position
+        else:
+            ratio = g.s2_min_position + (max_mom - g.s2_momentum_threshold_low) / \
+                    (g.s2_momentum_threshold_high - g.s2_momentum_threshold_low) * (g.s2_max_position - g.s2_min_position)
+        return max(g.s2_min_position, min(g.s2_max_position, ratio))
+    
+    position_ratio = calculate_position_ratio(signals)
+    
+    # 优化5：市场强度过滤
+    market_strength = s2_get_market_trend_strength(context)
+    position_ratio = s2_apply_market_filter(position_ratio, market_strength)
+    
+    # 改进1：波动率目标调整（需要传入权重，先计算临时权重）
+    total_score = sum(s['score'] for s in selected)
+    selected_with_weights = []
+    for s in selected:
+        if total_score == 0:
+            weight = 1.0 / len(selected)
+        else:
+            weight = min(s['score'] / total_score, 0.7)
+        selected_with_weights.append((s['code'], weight))
+    position_ratio = s2_apply_volatility_target(position_ratio, context, selected_with_weights)
+    
+    # 保存全局变量供买入使用
+    g.s2_selected = selected
+    g.s2_position_ratio = position_ratio
+    # 保存权重
+    for s, (_, w) in zip(selected, selected_with_weights):
+        s['weight'] = w
+    
+    log.info(f"最终信号: {[(s['code'], s['score']) for s in selected]}, 仓位{position_ratio:.2f}")
+    
+    # 清仓（仅当需要调仓时）
+    if not g.s2_skip_rebalance:
+        s2_clear_stocks(context)
+        
+def s2_can_not_deal(code,action=''):
+    cur_data = get_current_data()
+    cur_price = cur_data[code].last_price
+    no_price = cur_price is None or cur_price <=0
+    is_paused = cur_data[code].paused
+    is_st = cur_data[code].is_st
+    is_high_limit = cur_price>=cur_data[code].high_limit
+    is_low_limit = cur_price<=cur_data[code].low_limit 
+    can_not_deal = (no_price or is_paused or is_st)
+    if 'sell' == action:
+        can_not_deal = can_not_deal or is_low_limit
+    elif 'buy' == action:
+        can_not_deal = can_not_deal or is_high_limit
+    else:
+        can_not_deal = can_not_deal or is_low_limit or is_high_limit
+    if can_not_deal:
+        log.info(f"{code} can_not_deal={can_not_deal},{action} no_price={no_price} is_paused={is_paused} is_st={is_st} is_high_limit={is_high_limit} is_low_limit={is_low_limit}")
+    return can_not_deal
+    
+def s2_clear_stocks(context):
+    positions = get_s2_portfolio_positions(context)
+    cur_data = get_current_data()
+    new_selected_codes = []
+    if g.s2_selected:
+        new_selected_codes = [s['code'] for s in g.s2_selected]
+    for code in positions:
+        if code in new_selected_codes:
+            continue
+        if s2_can_not_deal(code,''):
+            continue
+        pos = positions[code]
+        if pos.closeable_amount > 0:
+            log.info(f"清仓{code}")
+            order(code, -pos.closeable_amount)
+            g.s2_holding_high_price[code] = None
+    # g.holding_high_price.clear()   # 重置止损记录
+    
+def s2_buy_signals(context):
+    if not g.s2_selected or g.s2_skip_rebalance:
+        return
+    selected = g.s2_selected
+    position_ratio = g.s2_position_ratio
+    portfolio = get_s2_portfolio(context)
+    available_value = portfolio.available_cash * position_ratio
+    
+    log.info("="*50)
+    log.info(f"市场状态: 仓位{position_ratio*100:.0f}%, 可用资金{available_value:.0f}")
+    log.info(f"选中标的: {[s['code'] for s in selected]}")
+    cur_data = get_current_data()
+    for s in selected:
+        code = s['code']
+        if s2_can_not_deal(code,''):
+            continue
+        target_value = available_value * s['weight']
+        current_price = cur_data[code].last_price
+        amount = target_value / current_price
+        log.info(f"  {code}: 趋势{s['trend_dev']*100:.1f}%, 相对动量{s['rel_mom']*100:.2f}%, "
+                 f"得分{s['score']:.2f}, 权重{s['weight']*100:.0f}%, 金额{target_value:.0f} 价格{current_price} 股数{amount}")
+        if amount>100:
+            s2_safe_order_target_value(context,'buy',code, target_value)
+            g.s2_holding_high_price[code] = current_price
+    
+    # 剩余资金买货币基金
+    cash_to_buy = portfolio.available_cash
+    if cash_to_buy > 100:
+        s2_safe_order_target_value(context,'buy',g.s2_cash_etf, cash_to_buy)
+        
+# ================== 下单辅助函数 ==================
+def s2_safe_order_target_value(context,action,code,target_value):
+    style = None
+    positions = get_s2_portfolio_positions(context)
+    portfolio = get_s2_portfolio(context)
+    available_cash = portfolio.available_cash
+    cur_data = get_current_data()
+    price = cur_data[code].last_price
+    is_kcb = code[:2] == '68'
+    limit_price = price*(1+0.005) if action == 'buy' else price*(1-0.005)
+    style = MarketOrderStyle(limit_price)
+
+    if code in positions:
+        pos = positions[code]
+        had_value = pos.value
+        diff_value = target_value - had_value
+        if action == 'sell' and diff_value < 0:
+            if target_value==0:
+                order(code, -pos.closeable_amount, style)
+                return -1
+            sell_amount = int(abs(diff_value)  / price // 100) * 100
+            a_amount = min(pos.closeable_amount, sell_amount)
+            if a_amount >= 100:
+                order(code, -a_amount, style)
+                return -1
+        elif diff_value > 0:
+            buy_value = min(available_cash, diff_value)
+            amount = int(abs(buy_value)  / price // 100) * 100
+            if amount >= 200 or (amount>=100 and not is_kcb):
+                order(code, amount, style)
+                return 1
+            else:
+                log.warn(f"s2_safe_order_target_value ignore,holding {code} {amount} {style} {available_cash}")
+    elif action == 'buy':
+        buy_value = min(available_cash, target_value)
+        amount = int(abs(buy_value)  / price // 100) * 100
+        if amount >= 200 or (amount>=100 and not is_kcb):
+            order(code, amount, style)
+            return 1
+        else:
+            log.warn(f"s2_safe_order_target_value ignore, {code} {amount} {style} {available_cash}")
+    return 0

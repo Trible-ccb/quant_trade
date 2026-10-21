@@ -9,7 +9,7 @@ import time
 import pandas as pd
 
 # 配置连接（请根据实际环境修改）
-HOST = '8.141.101.156'
+HOST = '***'
 TOKEN = '0011223344'
 PORT = 58620
 ACCOUNT_KEY = ''
