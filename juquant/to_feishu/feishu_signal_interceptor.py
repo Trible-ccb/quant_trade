@@ -20,9 +20,9 @@ import uuid
 import requests
 
 # ---------- 默认配置 ----------
-APP_ID       = 'cli_a94e072d7578dcdd'
-APP_SECRET   = 'e7bRdreD4YvAZogNLMjclgx4jkL4spOS'
-CHAT_ID      = 'oc_1a26007613e9d7674c6d4da378689066'      # 目标群 ID
+APP_ID       = '***'
+APP_SECRET   = '***'
+CHAT_ID      = '***'      # 目标群 ID
 STRATEGY_NAME = 'JQ_STRATEGY'
 FEISHU_API_BASE = 'https://open.feishu.cn/open-apis'
 
