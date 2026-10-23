@@ -73,7 +73,6 @@ def _is_invalid_handle(h):
         return True
     return False
 
-
 def _connect_pipe():
     """Connect to the named pipe as a client, in message-read mode."""
     global _pipe_handle
@@ -152,7 +151,7 @@ def init(ContextInfo):
 
 
 def order_callback(ContextInfo, orderInfo):
-    print('orderInfo %s' % orderInfo)
+    print('orderInfo %s' % json.dumps(orderInfo, ensure_ascii=False))
 
 
 def is_kcb_stock(stock_code):
@@ -224,10 +223,10 @@ def process_signal(msg_data, ContextInfo):
 
     if action == 'buy':
         op_type = 23
-        order_price = signal_price * (1 + 0.005) if signal_price > 0 else 0
+        order_price = signal_price * (1 + 0.001) if signal_price > 0 else 0
     elif action == 'sell':
         op_type = 24
-        order_price = signal_price * (1 - 0.005) if signal_price > 0 else 0
+        order_price = signal_price * (1 - 0.001) if signal_price > 0 else 0
     else:
         print("[Unknown] action=%s" % action)
         return
